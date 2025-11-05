@@ -17,6 +17,7 @@ A secure, responsive web dashboard for visualizing media posts scraped from Face
 .
 ├── backend/          # Flask API server
 │   ├── app.py       # Main Flask application
+│   ├── wsgi.py      # WSGI entry point for Gunicorn
 │   └── requirements.txt
 ├── frontend/        # React frontend
 │   ├── src/
@@ -265,6 +266,128 @@ The dashboard is fully responsive with breakpoints for:
 - Use environment variables for all secrets
 - Implement rate limiting
 - Add input validation and sanitization
+
+## 🚀 Production Deployment
+
+### Deploying with Gunicorn and Nginx
+
+#### Backend (Flask + Gunicorn)
+
+1. **Install Gunicorn** (already in requirements.txt)
+   ```bash
+   cd backend
+   pip install gunicorn
+   ```
+
+2. **Run with Gunicorn**
+   ```bash
+   cd backend
+   gunicorn -w 4 -b 127.0.0.1:5000 wsgi:application
+   ```
+   
+   Options:
+   - `-w 4`: Number of worker processes (adjust based on CPU cores)
+   - `-b 127.0.0.1:5000`: Bind to localhost:5000 (Nginx will proxy to this)
+   - `wsgi:application`: The WSGI entry point
+
+3. **Run as a systemd service** (recommended for production)
+   
+   Create `/etc/systemd/system/facebook-api.service`:
+   ```ini
+   [Unit]
+   Description=Facebook Aggregator API
+   After=network.target
+
+   [Service]
+   User=www-data
+   Group=www-data
+   WorkingDirectory=/path/to/backend
+   Environment="PATH=/path/to/venv/bin"
+   ExecStart=/path/to/venv/bin/gunicorn -w 4 -b 127.0.0.1:5000 wsgi:application
+   Restart=always
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   
+   Enable and start:
+   ```bash
+   sudo systemctl enable facebook-api
+   sudo systemctl start facebook-api
+   sudo systemctl status facebook-api
+   ```
+
+#### Frontend (React + Nginx)
+
+1. **Build the React app**
+   ```bash
+   cd frontend
+   npm run build
+   ```
+   
+   This creates a `dist` folder with production-ready files.
+
+2. **Configure Nginx**
+   
+   Create `/etc/nginx/sites-available/facebook-dashboard`:
+   ```nginx
+   server {
+       listen 80;
+       server_name your-domain.com;
+
+       # Frontend static files
+       root /path/to/frontend/dist;
+       index index.html;
+
+       # Serve React app
+       location / {
+           try_files $uri $uri/ /index.html;
+       }
+
+       # Proxy API requests to Flask backend
+       location /api {
+           proxy_pass http://127.0.0.1:5000;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+       }
+
+       # Security headers
+       add_header X-Frame-Options "SAMEORIGIN" always;
+       add_header X-Content-Type-Options "nosniff" always;
+       add_header X-XSS-Protection "1; mode=block" always;
+   }
+   ```
+
+3. **Enable the site and restart Nginx**
+   ```bash
+   sudo ln -s /etc/nginx/sites-available/facebook-dashboard /etc/nginx/sites-enabled/
+   sudo nginx -t
+   sudo systemctl restart nginx
+   ```
+
+4. **SSL/HTTPS (recommended)**
+   
+   Use Let's Encrypt with Certbot:
+   ```bash
+   sudo apt install certbot python3-certbot-nginx
+   sudo certbot --nginx -d your-domain.com
+   ```
+
+#### Environment Variables
+
+Ensure your `.env` file is in the backend directory or root directory with production values:
+```env
+DB_HOST=your_production_db_host
+DB_PORT=5432
+DB_USER=your_db_user
+DB_PASS=your_secure_db_password
+DB_NAME=facebook_aggregator
+JWT_SECRET=your_generated_secure_secret
+```
+
+**Important**: Never commit `.env` files to version control!
 
 ## 🐳 Docker
 
