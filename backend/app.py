@@ -120,10 +120,17 @@ def get_posts():
         date_from = request.args.get('date_from', '')
         date_to = request.args.get('date_to', '')
 
-        # Validate sort_by and order
-        valid_sort_fields = ['created_at', 'reactions', 'comments']
-        if sort_by not in valid_sort_fields:
+        # Validate sort_by and order - map to facebook_posts column names
+        sort_field_map = {
+            'created_at': 'fp.created_at',
+            'reactions': 'fp.reaction_count',
+            'comments': 'fp.comment_count'
+        }
+        if sort_by not in sort_field_map:
             sort_by = 'created_at'
+        
+        # Get the actual database column name for sorting
+        sort_field = sort_field_map[sort_by]
         
         if order not in ['asc', 'desc']:
             order = 'desc'
@@ -133,44 +140,77 @@ def get_posts():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Build WHERE clause
+        # Build WHERE clause - use facebook_posts column names
         where_conditions = []
         params = []
 
         if author:
-            where_conditions.append("author_name ILIKE %s")
+            where_conditions.append("fp.user_name ILIKE %s")
             params.append(f"%{author}%")
 
         if keyword:
-            where_conditions.append("text_content ILIKE %s")
+            where_conditions.append("fp.post_text ILIKE %s")
             params.append(f"%{keyword}%")
 
         if group_id:
-            where_conditions.append("group_id = %s")
+            where_conditions.append("fp.group_id = %s")
             params.append(group_id)
 
         if date_from:
-            where_conditions.append("created_at >= %s")
+            # Convert date string to timestamp for comparison with BIGINT created_at
+            where_conditions.append("to_timestamp(fp.created_at) >= %s::timestamp")
             params.append(date_from)
 
         if date_to:
-            where_conditions.append("created_at <= %s")
+            # Convert date string to timestamp for comparison with BIGINT created_at
+            where_conditions.append("to_timestamp(fp.created_at) <= %s::timestamp")
             params.append(date_to)
 
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
 
-        # Get total count
-        count_query = f"SELECT COUNT(*) as total FROM fb_media_posts WHERE {where_clause}"
+        # Get total count from facebook_posts
+        count_query = f"SELECT COUNT(*) as total FROM facebook_posts fp WHERE {where_clause}"
         cursor.execute(count_query, params)
         total = cursor.fetchone()['total']
 
-        # Get posts
+        # Get posts with attachments aggregated
+        # Convert BIGINT created_at to TIMESTAMP, aggregate attachments
         query = f"""
-            SELECT id, post_url, author_name, author_url, text_content, image_urls, 
-                   video_urls, content_type, reactions, comments, created_at, group_id
-            FROM fb_media_posts
+            SELECT 
+                fp.id,
+                fp.post_url,
+                fp.user_name as author_name,
+                fp.user_url as author_url,
+                fp.post_text as text_content,
+                fp.group_id,
+                fp.reaction_count as reactions,
+                fp.comment_count as comments,
+                fp.share_count as shares,
+                to_timestamp(fp.created_at) as created_at,
+                COALESCE(
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'url', fa.attachment_url,
+                            'type', fa.attachment_type
+                        )
+                    ) FILTER (WHERE fa.attachment_type = 'image'),
+                    '[]'::json
+                ) as image_attachments,
+                COALESCE(
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'url', fa.attachment_url,
+                            'type', fa.attachment_type
+                        )
+                    ) FILTER (WHERE fa.attachment_type = 'video'),
+                    '[]'::json
+                ) as video_attachments
+            FROM facebook_posts fp
+            LEFT JOIN facebook_attachments fa ON fp.post_url = fa.post_url
             WHERE {where_clause}
-            ORDER BY {sort_by} {order.upper()}
+            GROUP BY fp.id, fp.post_url, fp.user_name, fp.user_url, fp.post_text, 
+                     fp.group_id, fp.reaction_count, fp.comment_count, fp.share_count, fp.created_at
+            ORDER BY {sort_field} {order.upper()}
             LIMIT %s OFFSET %s
         """
         params.extend([per_page, offset])
@@ -187,48 +227,64 @@ def get_posts():
             post_dict['author'] = post_dict.pop('author_name')
             # Convert text_content to content for frontend compatibility
             post_dict['content'] = post_dict.pop('text_content')
-            # Handle JSONB image_urls - convert to single media_url or array
-            if post_dict.get('image_urls'):
-                if isinstance(post_dict['image_urls'], str):
-                    try:
-                        image_urls = json.loads(post_dict['image_urls'])
-                    except:
-                        image_urls = [post_dict['image_urls']]
-                else:
-                    image_urls = post_dict['image_urls']
-                # Use first image as media_url for compatibility
-                post_dict['media_url'] = image_urls[0] if image_urls and len(image_urls) > 0 else None
-                post_dict['image_urls'] = image_urls if isinstance(image_urls, list) else [image_urls]
-            else:
-                post_dict['media_url'] = None
-                post_dict['image_urls'] = []
             
-            # Handle JSONB video_urls
-            if post_dict.get('video_urls'):
-                if isinstance(post_dict['video_urls'], str):
+            # Extract image URLs from image_attachments JSON array
+            image_urls = []
+            if post_dict.get('image_attachments'):
+                if isinstance(post_dict['image_attachments'], str):
                     try:
-                        video_urls = json.loads(post_dict['video_urls'])
+                        image_attachments = json.loads(post_dict['image_attachments'])
                     except:
-                        video_urls = [post_dict['video_urls']]
+                        image_attachments = []
                 else:
-                    video_urls = post_dict['video_urls']
-                post_dict['video_urls'] = video_urls if isinstance(video_urls, list) else [video_urls]
-            else:
-                post_dict['video_urls'] = []
+                    image_attachments = post_dict['image_attachments']
+                
+                # Extract URLs from attachment objects
+                if isinstance(image_attachments, list):
+                    image_urls = [att.get('url') for att in image_attachments if att and att.get('url')]
             
-            # Set content_type if not present
-            if not post_dict.get('content_type'):
-                if post_dict.get('video_urls') and len(post_dict['video_urls']) > 0:
-                    post_dict['content_type'] = 'video'
-                elif post_dict.get('image_urls') and len(post_dict['image_urls']) > 0:
-                    post_dict['content_type'] = 'image'
+            # Extract video URLs from video_attachments JSON array
+            video_urls = []
+            if post_dict.get('video_attachments'):
+                if isinstance(post_dict['video_attachments'], str):
+                    try:
+                        video_attachments = json.loads(post_dict['video_attachments'])
+                    except:
+                        video_attachments = []
                 else:
-                    post_dict['content_type'] = 'text'
+                    video_attachments = post_dict['video_attachments']
+                
+                # Extract URLs from attachment objects
+                if isinstance(video_attachments, list):
+                    video_urls = [att.get('url') for att in video_attachments if att and att.get('url')]
+            
+            # Set image_urls and media_url
+            post_dict['image_urls'] = image_urls
+            post_dict['media_url'] = image_urls[0] if image_urls and len(image_urls) > 0 else None
+            
+            # Set video_urls
+            post_dict['video_urls'] = video_urls
+            
+            # Remove the attachment fields (not needed in response)
+            post_dict.pop('image_attachments', None)
+            post_dict.pop('video_attachments', None)
+            
+            # Set content_type based on attachments
+            if video_urls and len(video_urls) > 0:
+                post_dict['content_type'] = 'video'
+            elif image_urls and len(image_urls) > 0:
+                post_dict['content_type'] = 'image'
+            else:
+                post_dict['content_type'] = 'text'
+            
             # Format date
             if post_dict.get('created_at'):
                 post_dict['created_at'] = post_dict['created_at'].isoformat()
-            # Remove shares (not in new schema)
-            post_dict['shares'] = 0
+            
+            # shares is already in the data from share_count
+            if post_dict.get('shares') is None:
+                post_dict['shares'] = 0
+            
             posts_list.append(post_dict)
 
         cursor.close()
@@ -258,10 +314,40 @@ def get_post(post_id):
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         query = """
-            SELECT id, post_url, author_name, author_url, text_content, image_urls, 
-                   video_urls, content_type, reactions, comments, created_at, group_id
-            FROM fb_media_posts
-            WHERE post_url = %s
+            SELECT 
+                fp.id,
+                fp.post_url,
+                fp.user_name as author_name,
+                fp.user_url as author_url,
+                fp.post_text as text_content,
+                fp.group_id,
+                fp.reaction_count as reactions,
+                fp.comment_count as comments,
+                fp.share_count as shares,
+                to_timestamp(fp.created_at) as created_at,
+                COALESCE(
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'url', fa.attachment_url,
+                            'type', fa.attachment_type
+                        )
+                    ) FILTER (WHERE fa.attachment_type = 'image'),
+                    '[]'::json
+                ) as image_attachments,
+                COALESCE(
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'url', fa.attachment_url,
+                            'type', fa.attachment_type
+                        )
+                    ) FILTER (WHERE fa.attachment_type = 'video'),
+                    '[]'::json
+                ) as video_attachments
+            FROM facebook_posts fp
+            LEFT JOIN facebook_attachments fa ON fp.post_url = fa.post_url
+            WHERE fp.post_url = %s
+            GROUP BY fp.id, fp.post_url, fp.user_name, fp.user_url, fp.post_text, 
+                     fp.group_id, fp.reaction_count, fp.comment_count, fp.share_count, fp.created_at
         """
         cursor.execute(query, (post_id,))
         post = cursor.fetchone()
@@ -276,45 +362,56 @@ def get_post(post_id):
             post_dict['author'] = post_dict.pop('author_name')
             post_dict['content'] = post_dict.pop('text_content')
             
-            # Handle JSONB image_urls
-            if post_dict.get('image_urls'):
-                if isinstance(post_dict['image_urls'], str):
+            # Extract image URLs from image_attachments JSON array
+            image_urls = []
+            if post_dict.get('image_attachments'):
+                if isinstance(post_dict['image_attachments'], str):
                     try:
-                        image_urls = json.loads(post_dict['image_urls'])
+                        image_attachments = json.loads(post_dict['image_attachments'])
                     except:
-                        image_urls = [post_dict['image_urls']]
+                        image_attachments = []
                 else:
-                    image_urls = post_dict['image_urls']
-                post_dict['media_url'] = image_urls[0] if image_urls and len(image_urls) > 0 else None
-                post_dict['image_urls'] = image_urls if isinstance(image_urls, list) else [image_urls]
-            else:
-                post_dict['media_url'] = None
-                post_dict['image_urls'] = []
+                    image_attachments = post_dict['image_attachments']
+                
+                if isinstance(image_attachments, list):
+                    image_urls = [att.get('url') for att in image_attachments if att and att.get('url')]
             
-            # Handle JSONB video_urls
-            if post_dict.get('video_urls'):
-                if isinstance(post_dict['video_urls'], str):
+            # Extract video URLs from video_attachments JSON array
+            video_urls = []
+            if post_dict.get('video_attachments'):
+                if isinstance(post_dict['video_attachments'], str):
                     try:
-                        video_urls = json.loads(post_dict['video_urls'])
+                        video_attachments = json.loads(post_dict['video_attachments'])
                     except:
-                        video_urls = [post_dict['video_urls']]
+                        video_attachments = []
                 else:
-                    video_urls = post_dict['video_urls']
-                post_dict['video_urls'] = video_urls if isinstance(video_urls, list) else [video_urls]
+                    video_attachments = post_dict['video_attachments']
+                
+                if isinstance(video_attachments, list):
+                    video_urls = [att.get('url') for att in video_attachments if att and att.get('url')]
+            
+            # Set image_urls and media_url
+            post_dict['image_urls'] = image_urls
+            post_dict['media_url'] = image_urls[0] if image_urls and len(image_urls) > 0 else None
+            
+            # Set video_urls
+            post_dict['video_urls'] = video_urls
+            
+            # Remove the attachment fields
+            post_dict.pop('image_attachments', None)
+            post_dict.pop('video_attachments', None)
+            
+            # Set content_type based on attachments
+            if video_urls and len(video_urls) > 0:
+                post_dict['content_type'] = 'video'
+            elif image_urls and len(image_urls) > 0:
+                post_dict['content_type'] = 'image'
             else:
-                post_dict['video_urls'] = []
+                post_dict['content_type'] = 'text'
             
-            # Set content_type if not present
-            if not post_dict.get('content_type'):
-                if post_dict.get('video_urls') and len(post_dict['video_urls']) > 0:
-                    post_dict['content_type'] = 'video'
-                elif post_dict.get('image_urls') and len(post_dict['image_urls']) > 0:
-                    post_dict['content_type'] = 'image'
-                else:
-                    post_dict['content_type'] = 'text'
-            
-            # Add shares (default to 0 since not in schema)
-            post_dict['shares'] = 0
+            # shares is already in the data from share_count
+            if post_dict.get('shares') is None:
+                post_dict['shares'] = 0
             
             if post_dict.get('created_at'):
                 post_dict['created_at'] = post_dict['created_at'].isoformat()
@@ -339,8 +436,8 @@ def get_groups():
             SELECT 
                 group_id,
                 COUNT(*) as post_count
-            FROM fb_media_posts
-            WHERE group_id IS NOT NULL
+            FROM facebook_posts
+            WHERE group_id IS NOT NULL AND group_id != ''
             GROUP BY group_id
             ORDER BY post_count DESC
         """)
@@ -378,39 +475,69 @@ def export_posts():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Build WHERE clause (same logic as get_posts)
+        # Build WHERE clause (same logic as get_posts) - use facebook_posts column names
         where_conditions = []
         params = []
 
         if author:
-            where_conditions.append("author_name ILIKE %s")
+            where_conditions.append("fp.user_name ILIKE %s")
             params.append(f"%{author}%")
 
         if keyword:
-            where_conditions.append("text_content ILIKE %s")
+            where_conditions.append("fp.post_text ILIKE %s")
             params.append(f"%{keyword}%")
 
         if group_id:
-            where_conditions.append("group_id = %s")
+            where_conditions.append("fp.group_id = %s")
             params.append(group_id)
 
         if date_from:
-            where_conditions.append("created_at >= %s")
+            where_conditions.append("to_timestamp(fp.created_at) >= %s::timestamp")
             params.append(date_from)
 
         if date_to:
-            where_conditions.append("created_at <= %s")
+            where_conditions.append("to_timestamp(fp.created_at) <= %s::timestamp")
             params.append(date_to)
 
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
 
-        # Get all posts (no pagination for export)
+        # Get all posts (no pagination for export) with attachments
         query = f"""
-            SELECT id, post_url, author_name, author_url, text_content, image_urls, 
-                   video_urls, content_type, reactions, comments, created_at, group_id
-            FROM fb_media_posts
+            SELECT 
+                fp.id,
+                fp.post_url,
+                fp.user_name as author_name,
+                fp.user_url as author_url,
+                fp.post_text as text_content,
+                fp.group_id,
+                fp.reaction_count as reactions,
+                fp.comment_count as comments,
+                fp.share_count as shares,
+                to_timestamp(fp.created_at) as created_at,
+                COALESCE(
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'url', fa.attachment_url,
+                            'type', fa.attachment_type
+                        )
+                    ) FILTER (WHERE fa.attachment_type = 'image'),
+                    '[]'::json
+                ) as image_attachments,
+                COALESCE(
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'url', fa.attachment_url,
+                            'type', fa.attachment_type
+                        )
+                    ) FILTER (WHERE fa.attachment_type = 'video'),
+                    '[]'::json
+                ) as video_attachments
+            FROM facebook_posts fp
+            LEFT JOIN facebook_attachments fa ON fp.post_url = fa.post_url
             WHERE {where_clause}
-            ORDER BY created_at DESC
+            GROUP BY fp.id, fp.post_url, fp.user_name, fp.user_url, fp.post_text, 
+                     fp.group_id, fp.reaction_count, fp.comment_count, fp.share_count, fp.created_at
+            ORDER BY fp.created_at DESC
         """
         cursor.execute(query, params)
         posts = cursor.fetchall()
@@ -422,31 +549,41 @@ def export_posts():
         posts_list = []
         for post in posts:
             post_dict = dict(post)
-            # Handle JSONB image_urls
-            if post_dict.get('image_urls'):
-                if isinstance(post_dict['image_urls'], str):
-                    try:
-                        image_urls = json.loads(post_dict['image_urls'])
-                    except:
-                        image_urls = [post_dict['image_urls']]
-                else:
-                    image_urls = post_dict['image_urls']
-                post_dict['image_urls'] = image_urls if isinstance(image_urls, list) else [image_urls]
-            else:
-                post_dict['image_urls'] = []
             
-            # Handle JSONB video_urls
-            if post_dict.get('video_urls'):
-                if isinstance(post_dict['video_urls'], str):
+            # Extract image URLs from image_attachments JSON array
+            image_urls = []
+            if post_dict.get('image_attachments'):
+                if isinstance(post_dict['image_attachments'], str):
                     try:
-                        video_urls = json.loads(post_dict['video_urls'])
+                        image_attachments = json.loads(post_dict['image_attachments'])
                     except:
-                        video_urls = [post_dict['video_urls']]
+                        image_attachments = []
                 else:
-                    video_urls = post_dict['video_urls']
-                post_dict['video_urls'] = video_urls if isinstance(video_urls, list) else [video_urls]
-            else:
-                post_dict['video_urls'] = []
+                    image_attachments = post_dict['image_attachments']
+                
+                if isinstance(image_attachments, list):
+                    image_urls = [att.get('url') for att in image_attachments if att and att.get('url')]
+            
+            # Extract video URLs from video_attachments JSON array
+            video_urls = []
+            if post_dict.get('video_attachments'):
+                if isinstance(post_dict['video_attachments'], str):
+                    try:
+                        video_attachments = json.loads(post_dict['video_attachments'])
+                    except:
+                        video_attachments = []
+                else:
+                    video_attachments = post_dict['video_attachments']
+                
+                if isinstance(video_attachments, list):
+                    video_urls = [att.get('url') for att in video_attachments if att and att.get('url')]
+            
+            post_dict['image_urls'] = image_urls
+            post_dict['video_urls'] = video_urls
+            
+            # Remove attachment fields
+            post_dict.pop('image_attachments', None)
+            post_dict.pop('video_attachments', None)
             
             if post_dict.get('created_at'):
                 post_dict['created_at'] = post_dict['created_at'].isoformat()
@@ -546,28 +683,29 @@ def get_stats():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Get total posts
-        cursor.execute("SELECT COUNT(*) as total FROM fb_media_posts")
+        cursor.execute("SELECT COUNT(*) as total FROM facebook_posts")
         total_posts = cursor.fetchone()['total']
 
-        # Get total reactions and comments (shares not in schema)
+        # Get total reactions, comments, and shares
         cursor.execute("""
             SELECT 
-                SUM(reactions) as total_reactions,
-                SUM(comments) as total_comments
-            FROM fb_media_posts
+                SUM(reaction_count) as total_reactions,
+                SUM(comment_count) as total_comments,
+                SUM(share_count) as total_shares
+            FROM facebook_posts
         """)
         engagement = cursor.fetchone()
 
         # Get unique authors count
-        cursor.execute("SELECT COUNT(DISTINCT author_name) as total_authors FROM fb_media_posts")
+        cursor.execute("SELECT COUNT(DISTINCT user_name) as total_authors FROM facebook_posts WHERE user_name IS NOT NULL")
         total_authors = cursor.fetchone()['total_authors']
 
-        # Get posts by date (last 7 days)
+        # Get posts by date (last 7 days) - convert BIGINT timestamp to date
         cursor.execute("""
-            SELECT DATE(created_at) as date, COUNT(*) as count
-            FROM fb_media_posts
-            WHERE created_at >= NOW() - INTERVAL '7 days'
-            GROUP BY DATE(created_at)
+            SELECT DATE(to_timestamp(created_at)) as date, COUNT(*) as count
+            FROM facebook_posts
+            WHERE to_timestamp(created_at) >= NOW() - INTERVAL '7 days'
+            GROUP BY DATE(to_timestamp(created_at))
             ORDER BY date ASC
         """)
         posts_by_date = cursor.fetchall()
@@ -587,7 +725,7 @@ def get_stats():
             'total_posts': total_posts,
             'total_reactions': engagement['total_reactions'] or 0,
             'total_comments': engagement['total_comments'] or 0,
-            'total_shares': 0,  # Not in schema, default to 0
+            'total_shares': engagement['total_shares'] or 0,
             'total_authors': total_authors,
             'posts_by_date': posts_by_date_formatted
         }), 200
