@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import api from '../services/api'
 import PostGrid from '../components/PostGrid'
@@ -8,13 +8,14 @@ import PostDetailModal from '../components/PostDetailModal'
 
 const Overview = () => {
   const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { isAuthenticated } = useAuth()
   const [posts, setPosts] = useState([])
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [filters, setFilters] = useState({
     author: '',
-    keyword: location.state?.search || '',
+    keyword: searchParams.get('search') || location.state?.search || '',
     group_id: '',
     date_from: '',
     date_to: '',
@@ -48,14 +49,22 @@ const Overview = () => {
     }
   }
 
-  // Update filters when location state changes (from search)
+  // Update filters when URL search param or location state changes (from search)
   useEffect(() => {
-    if (location.state?.search !== undefined && location.state.search !== filters.keyword) {
-      setFilters(prev => ({ ...prev, keyword: location.state.search }))
+    const searchKeyword = searchParams.get('search') || location.state?.search || ''
+    setFilters(prev => {
+      if (prev.keyword !== searchKeyword) {
+        return { ...prev, keyword: searchKeyword }
+      }
+      return prev
+    })
+    // Reset pagination and posts when search changes
+    const currentSearch = searchParams.get('search') || location.state?.search || ''
+    if (currentSearch) {
       setPagination(prev => ({ ...prev, page: 1 }))
       setPosts([])
     }
-  }, [location.state?.search])
+  }, [searchParams, location.state?.search])
 
   useEffect(() => {
     if (isAuthenticated) {

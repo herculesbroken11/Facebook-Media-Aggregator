@@ -1,19 +1,25 @@
-import { useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 
 const Header = ({ onMenuClick }) => {
   const location = useLocation()
   const navigate = useNavigate()
-  const [searchKeyword, setSearchKeyword] = useState('')
+  const [searchParams] = useSearchParams()
+  const [searchKeyword, setSearchKeyword] = useState(searchParams.get('search') || '')
+  
+  // Sync search input with URL parameter
+  useEffect(() => {
+    const urlSearch = searchParams.get('search') || ''
+    setSearchKeyword(urlSearch)
+  }, [searchParams])
 
   const handleSearch = (e) => {
     e.preventDefault()
-    // Navigate to overview with search keyword
-    if (location.pathname !== '/dashboard') {
-      navigate('/dashboard', { state: { search: searchKeyword } })
+    // Use URL search params for more reliable search
+    if (searchKeyword.trim()) {
+      navigate(`/dashboard?search=${encodeURIComponent(searchKeyword.trim())}`)
     } else {
-      // If already on dashboard, update the location state to trigger filter update
-      navigate('/dashboard', { state: { search: searchKeyword }, replace: true })
+      navigate('/dashboard')
     }
   }
 
