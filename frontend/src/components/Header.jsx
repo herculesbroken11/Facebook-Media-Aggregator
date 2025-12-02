@@ -8,12 +8,13 @@ const Header = ({ onMenuClick }) => {
 
   const handleSearch = (e) => {
     e.preventDefault()
-    // Navigate to overview with search if not already there
+    // Navigate to overview with search keyword
     if (location.pathname !== '/dashboard') {
       navigate('/dashboard', { state: { search: searchKeyword } })
+    } else {
+      // If already on dashboard, update the location state to trigger filter update
+      navigate('/dashboard', { state: { search: searchKeyword }, replace: true })
     }
-    // TODO: Implement search functionality
-    console.log('Search:', searchKeyword)
   }
 
   return (

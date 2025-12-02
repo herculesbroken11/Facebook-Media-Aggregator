@@ -48,6 +48,15 @@ const Overview = () => {
     }
   }
 
+  // Update filters when location state changes (from search)
+  useEffect(() => {
+    if (location.state?.search !== undefined && location.state.search !== filters.keyword) {
+      setFilters(prev => ({ ...prev, keyword: location.state.search }))
+      setPagination(prev => ({ ...prev, page: 1 }))
+      setPosts([])
+    }
+  }, [location.state?.search])
+
   useEffect(() => {
     if (isAuthenticated) {
       fetchPosts()
@@ -285,7 +294,7 @@ const Overview = () => {
                         <option value="">All Groups</option>
                         {groups.map((group) => (
                           <option key={group.group_id} value={group.group_id}>
-                            Group {group.group_id} ({group.post_count})
+                            {group.group_name || `Group ${group.group_id}`} ({group.post_count})
                           </option>
                         ))}
                       </select>

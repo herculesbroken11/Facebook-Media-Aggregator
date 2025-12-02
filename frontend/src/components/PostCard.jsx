@@ -13,6 +13,21 @@ const PostCard = ({ post, onClick }) => {
     })
   }
 
+  const formatDateTime = (dateString) => {
+    if (!dateString) return 'Unknown date'
+    const date = new Date(dateString)
+    const dateStr = date.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    })
+    const timeStr = date.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+    return `${dateStr} at ${timeStr}`
+  }
+
   return (
     <div
       onClick={onClick}
@@ -96,9 +111,9 @@ const PostCard = ({ post, onClick }) => {
           </div>
         </div>
 
-        {/* Date */}
+        {/* Date and Time */}
         <p className="text-xs text-gray-400 dark:text-gray-500">
-          {formatDate(post.created_at)}
+          {formatDateTime(post.created_at)}
         </p>
       </div>
     </div>

@@ -158,12 +158,14 @@ def get_posts():
 
         if date_from:
             # Convert date string to timestamp for comparison with BIGINT created_at
-            where_conditions.append("to_timestamp(fp.created_at) >= %s::timestamp")
+            # Use start of day (00:00:00) for date_from
+            where_conditions.append("to_timestamp(fp.created_at) >= %s::date")
             params.append(date_from)
 
         if date_to:
             # Convert date string to timestamp for comparison with BIGINT created_at
-            where_conditions.append("to_timestamp(fp.created_at) <= %s::timestamp")
+            # Use end of day (23:59:59) for date_to to include the entire day
+            where_conditions.append("to_timestamp(fp.created_at) < (%s::date + INTERVAL '1 day')")
             params.append(date_to)
 
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
@@ -429,6 +431,9 @@ def get_post(post_id):
 def get_groups():
     """Get list of all groups with post counts"""
     try:
+        import re
+        from urllib.parse import urlparse
+        
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -446,7 +451,38 @@ def get_groups():
         cursor.close()
         conn.close()
 
-        groups_list = [dict(row) for row in groups]
+        # Format groups with readable names
+        groups_list = []
+        for row in groups:
+            group_dict = dict(row)
+            group_id = group_dict['group_id']
+            
+            # Try to extract a readable group name from the ID
+            group_name = group_id
+            if group_id.startswith('http'):
+                # Extract from URL
+                try:
+                    parsed = urlparse(group_id)
+                    path_parts = [p for p in parsed.path.split('/') if p]
+                    if path_parts:
+                        # Get the last meaningful part of the path
+                        group_name = path_parts[-1] if path_parts[-1] else path_parts[-2] if len(path_parts) > 1 else group_id
+                        # Clean up the name (remove query params, etc.)
+                        group_name = group_name.split('?')[0]
+                except:
+                    group_name = group_id
+            elif '/' in group_id:
+                # If it's a path-like string, get the last part
+                group_name = group_id.split('/')[-1].split('?')[0]
+            
+            # Format the name nicely
+            if group_name and group_name != group_id:
+                group_dict['group_name'] = group_name.replace('-', ' ').replace('_', ' ').title()
+            else:
+                group_dict['group_name'] = f"Group {group_id[:20]}" if len(group_id) > 20 else f"Group {group_id}"
+            
+            groups_list.append(group_dict)
+        
         return jsonify({'groups': groups_list}), 200
 
     except Exception as e:
@@ -492,11 +528,13 @@ def export_posts():
             params.append(group_id)
 
         if date_from:
-            where_conditions.append("to_timestamp(fp.created_at) >= %s::timestamp")
+            # Use start of day (00:00:00) for date_from
+            where_conditions.append("to_timestamp(fp.created_at) >= %s::date")
             params.append(date_from)
 
         if date_to:
-            where_conditions.append("to_timestamp(fp.created_at) <= %s::timestamp")
+            # Use end of day (23:59:59) for date_to to include the entire day
+            where_conditions.append("to_timestamp(fp.created_at) < (%s::date + INTERVAL '1 day')")
             params.append(date_to)
 
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
