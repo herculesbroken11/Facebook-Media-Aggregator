@@ -51,6 +51,32 @@ def get_db_connection():
         raise
 
 
+def extract_group_id_from_url(post_url):
+    """Extract group_id from Facebook post URL if group_id column is empty.
+    
+    Handles URLs like:
+    - https://www.facebook.com/groups/pardodbiznesupardoduznemumu/posts/...
+    - https://www.facebook.com/groups/grasis.lt/posts/...
+    - https://www.facebook.com/groups/287451671699882/posts/...
+    """
+    if not post_url:
+        return None
+    
+    import re
+    from urllib.parse import urlparse
+    
+    try:
+        # Pattern to match /groups/{group_id}/ in the URL
+        pattern = r'/groups/([^/]+)/'
+        match = re.search(pattern, post_url)
+        if match:
+            return match.group(1)
+    except Exception as e:
+        logger.error(f"Error extracting group_id from URL: {e}")
+    
+    return None
+
+
 @app.route('/api/login', methods=['POST'])
 def login():
     """Authenticate user and return JWT token"""
@@ -153,7 +179,17 @@ def get_posts():
             params.append(f"%{keyword}%")
 
         if group_id:
-            where_conditions.append("fp.group_id = %s")
+            # Handle group filtering: check both group_id column and extract from post_url
+            # Use COALESCE to get group_id from column or extract from URL
+            where_conditions.append("""
+                (COALESCE(fp.group_id, 
+                    CASE 
+                        WHEN fp.post_url ~ '/groups/([^/]+)/' 
+                        THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                        ELSE NULL 
+                    END
+                ) = %s)
+            """)
             params.append(group_id)
 
         if date_from:
@@ -177,6 +213,7 @@ def get_posts():
 
         # Get posts with attachments aggregated
         # Convert BIGINT created_at to TIMESTAMP, aggregate attachments
+        # Extract group_id from post_url if group_id column is empty
         query = f"""
             SELECT 
                 fp.id,
@@ -184,7 +221,14 @@ def get_posts():
                 fp.user_name as author_name,
                 fp.user_url as author_url,
                 fp.post_text as text_content,
-                fp.group_id,
+                COALESCE(
+                    fp.group_id,
+                    CASE 
+                        WHEN fp.post_url ~ '/groups/([^/]+)/' 
+                        THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                        ELSE NULL 
+                    END
+                ) as group_id,
                 fp.reaction_count as reactions,
                 fp.comment_count as comments,
                 fp.share_count as shares,
@@ -429,7 +473,7 @@ def get_post(post_id):
 @app.route('/api/groups', methods=['GET'])
 @jwt_required()
 def get_groups():
-    """Get list of all groups with post counts"""
+    """Get list of all groups with post counts, including groups extracted from post_url"""
     try:
         import re
         from urllib.parse import urlparse
@@ -437,13 +481,35 @@ def get_groups():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Get groups from both group_id column and extract from post_url when group_id is empty
         cursor.execute("""
             SELECT 
-                group_id,
+                COALESCE(
+                    fp.group_id,
+                    CASE 
+                        WHEN fp.post_url ~ '/groups/([^/]+)/' 
+                        THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                        ELSE NULL 
+                    END
+                ) as group_id,
                 COUNT(*) as post_count
-            FROM facebook_posts
-            WHERE group_id IS NOT NULL AND group_id != ''
-            GROUP BY group_id
+            FROM facebook_posts fp
+            WHERE COALESCE(
+                fp.group_id,
+                CASE 
+                    WHEN fp.post_url ~ '/groups/([^/]+)/' 
+                    THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                    ELSE NULL 
+                END
+            ) IS NOT NULL
+            GROUP BY COALESCE(
+                fp.group_id,
+                CASE 
+                    WHEN fp.post_url ~ '/groups/([^/]+)/' 
+                    THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                    ELSE NULL 
+                END
+            )
             ORDER BY post_count DESC
         """)
         groups = cursor.fetchall()
@@ -456,6 +522,9 @@ def get_groups():
         for row in groups:
             group_dict = dict(row)
             group_id = group_dict['group_id']
+            
+            if not group_id:
+                continue
             
             # Try to extract a readable group name from the ID
             group_name = group_id
@@ -476,10 +545,16 @@ def get_groups():
                 group_name = group_id.split('/')[-1].split('?')[0]
             
             # Format the name nicely
-            if group_name and group_name != group_id:
-                group_dict['group_name'] = group_name.replace('-', ' ').replace('_', ' ').title()
+            # If it's a readable name (not just numbers), format it
+            if not group_id.isdigit() and group_name and group_name != group_id:
+                # Replace dots, dashes, underscores with spaces and title case
+                group_dict['group_name'] = group_name.replace('.', ' ').replace('-', ' ').replace('_', ' ').title()
+            elif group_id.isdigit():
+                # For numeric IDs, just show as "Group {id}"
+                group_dict['group_name'] = f"Group {group_id}"
             else:
-                group_dict['group_name'] = f"Group {group_id[:20]}" if len(group_id) > 20 else f"Group {group_id}"
+                # For readable names, format nicely
+                group_dict['group_name'] = group_name.replace('.', ' ').replace('-', ' ').replace('_', ' ').title()
             
             groups_list.append(group_dict)
         
@@ -524,7 +599,17 @@ def export_posts():
             params.append(f"%{keyword}%")
 
         if group_id:
-            where_conditions.append("fp.group_id = %s")
+            # Handle group filtering: check both group_id column and extract from post_url
+            # Use COALESCE to get group_id from column or extract from URL
+            where_conditions.append("""
+                (COALESCE(fp.group_id, 
+                    CASE 
+                        WHEN fp.post_url ~ '/groups/([^/]+)/' 
+                        THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                        ELSE NULL 
+                    END
+                ) = %s)
+            """)
             params.append(group_id)
 
         if date_from:
