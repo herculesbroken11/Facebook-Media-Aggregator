@@ -482,34 +482,55 @@ def get_groups():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Get groups from both group_id column and extract from post_url when group_id is empty
+        # First, let's check for posts with empty group_id to see what URLs we have
         cursor.execute("""
-            SELECT 
-                COALESCE(
-                    fp.group_id,
-                    CASE 
-                        WHEN fp.post_url ~* '/groups/([^/]+)/' 
-                        THEN (regexp_match(fp.post_url, '/groups/([^/]+)/', 'i'))[1]
-                        ELSE NULL 
-                    END
-                ) as group_id,
-                COUNT(*) as post_count
-            FROM facebook_posts fp
-            WHERE COALESCE(
-                fp.group_id,
-                CASE 
-                    WHEN fp.post_url ~* '/groups/([^/]+)/' 
-                    THEN (regexp_match(fp.post_url, '/groups/([^/]+)/', 'i'))[1]
-                    ELSE NULL 
-                END
-            ) IS NOT NULL
-            GROUP BY COALESCE(
-                fp.group_id,
-                CASE 
-                    WHEN fp.post_url ~* '/groups/([^/]+)/' 
-                    THEN (regexp_match(fp.post_url, '/groups/([^/]+)/', 'i'))[1]
-                    ELSE NULL 
-                END
+            SELECT post_url, group_id 
+            FROM facebook_posts 
+            WHERE (group_id IS NULL OR group_id = '') 
+            AND post_url LIKE '%/groups/%'
+            LIMIT 10
+        """)
+        sample_empty_groups = cursor.fetchall()
+        if sample_empty_groups:
+            logger.info(f"Sample posts with empty group_id: {[(r['post_url'][:100] if r['post_url'] else 'None', r['group_id']) for r in sample_empty_groups]}")
+        
+        # Check specifically for the target groups
+        cursor.execute("""
+            SELECT COUNT(*) as count, post_url
+            FROM facebook_posts 
+            WHERE post_url LIKE '%/groups/pardodbiznesupardoduznemumu%'
+               OR post_url LIKE '%/groups/grasis.lt%'
+            GROUP BY post_url
+            LIMIT 5
+        """)
+        target_posts = cursor.fetchall()
+        if target_posts:
+            logger.info(f"Found {len(target_posts)} posts from target groups")
+            for tp in target_posts:
+                logger.info(f"  Post URL sample: {tp['post_url'][:100] if tp['post_url'] else 'None'}")
+        
+        # Get groups from both group_id column and extract from post_url when group_id is empty
+        # Improved regex to handle URLs with or without trailing slash, and with query parameters
+        cursor.execute("""
+            WITH extracted_groups AS (
+                SELECT 
+                    COALESCE(
+                        NULLIF(fp.group_id, ''),
+                        CASE 
+                            WHEN fp.post_url ~ '/groups/([^/?]+)' 
+                            THEN (regexp_match(fp.post_url, '/groups/([^/?]+)'))[1]
+                            ELSE NULL 
+                        END
+                    ) as group_id
+                FROM facebook_posts fp
             )
+            SELECT 
+                group_id,
+                COUNT(*) as post_count
+            FROM extracted_groups
+            WHERE group_id IS NOT NULL 
+            AND group_id != ''
+            GROUP BY group_id
             ORDER BY post_count DESC
         """)
         groups = cursor.fetchall()
@@ -517,8 +538,16 @@ def get_groups():
         # Log for debugging
         logger.info(f"Found {len(groups)} groups in database")
         if len(groups) > 0:
-            sample_groups = [g['group_id'] for g in groups[:5]]
+            sample_groups = [g['group_id'] for g in groups[:10] if g['group_id']]
             logger.info(f"Sample group IDs: {sample_groups}")
+            
+            # Check specifically for the two groups we're looking for
+            target_groups = ['pardodbiznesupardoduznemumu', 'grasis.lt']
+            found_targets = [g for g in groups if g['group_id'] in target_groups]
+            if found_targets:
+                logger.info(f"Found target groups: {[g['group_id'] for g in found_targets]}")
+            else:
+                logger.warning(f"Target groups {target_groups} not found in results")
 
         cursor.close()
         conn.close()
@@ -527,9 +556,11 @@ def get_groups():
         groups_list = []
         for row in groups:
             group_dict = dict(row)
-            group_id = group_dict['group_id']
+            group_id = group_dict.get('group_id')
             
-            if not group_id:
+            # Skip if group_id is None, empty string, or whitespace
+            if not group_id or not str(group_id).strip():
+                logger.warning(f"Skipping group with empty/null group_id: {group_dict}")
                 continue
             
             # Format the name nicely
