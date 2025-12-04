@@ -181,11 +181,12 @@ def get_posts():
         if group_id:
             # Handle group filtering: check both group_id column and extract from post_url
             # Use COALESCE to get group_id from column or extract from URL
+            # Improved regex to handle URLs with or without trailing slash and query parameters
             where_conditions.append("""
-                (COALESCE(fp.group_id, 
+                (COALESCE(NULLIF(fp.group_id, ''), 
                     CASE 
-                        WHEN fp.post_url ~ '/groups/([^/]+)/' 
-                        THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                        WHEN fp.post_url ~ '/groups/([^/?]+)' 
+                        THEN (regexp_match(fp.post_url, '/groups/([^/?]+)'))[1]
                         ELSE NULL 
                     END
                 ) = %s)
@@ -222,10 +223,10 @@ def get_posts():
                 fp.user_url as author_url,
                 fp.post_text as text_content,
                 COALESCE(
-                    fp.group_id,
+                    NULLIF(fp.group_id, ''),
                     CASE 
-                        WHEN fp.post_url ~ '/groups/([^/]+)/' 
-                        THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                        WHEN fp.post_url ~ '/groups/([^/?]+)' 
+                        THEN (regexp_match(fp.post_url, '/groups/([^/?]+)'))[1]
                         ELSE NULL 
                     END
                 ) as group_id,
@@ -619,11 +620,12 @@ def export_posts():
         if group_id:
             # Handle group filtering: check both group_id column and extract from post_url
             # Use COALESCE to get group_id from column or extract from URL
+            # Improved regex to handle URLs with or without trailing slash and query parameters
             where_conditions.append("""
-                (COALESCE(fp.group_id, 
+                (COALESCE(NULLIF(fp.group_id, ''), 
                     CASE 
-                        WHEN fp.post_url ~ '/groups/([^/]+)/' 
-                        THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                        WHEN fp.post_url ~ '/groups/([^/?]+)' 
+                        THEN (regexp_match(fp.post_url, '/groups/([^/?]+)'))[1]
                         ELSE NULL 
                     END
                 ) = %s)
