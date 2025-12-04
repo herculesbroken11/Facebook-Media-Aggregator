@@ -487,8 +487,8 @@ def get_groups():
                 COALESCE(
                     fp.group_id,
                     CASE 
-                        WHEN fp.post_url ~ '/groups/([^/]+)/' 
-                        THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                        WHEN fp.post_url ~* '/groups/([^/]+)/' 
+                        THEN (regexp_match(fp.post_url, '/groups/([^/]+)/', 'i'))[1]
                         ELSE NULL 
                     END
                 ) as group_id,
@@ -497,22 +497,28 @@ def get_groups():
             WHERE COALESCE(
                 fp.group_id,
                 CASE 
-                    WHEN fp.post_url ~ '/groups/([^/]+)/' 
-                    THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                    WHEN fp.post_url ~* '/groups/([^/]+)/' 
+                    THEN (regexp_match(fp.post_url, '/groups/([^/]+)/', 'i'))[1]
                     ELSE NULL 
                 END
             ) IS NOT NULL
             GROUP BY COALESCE(
                 fp.group_id,
                 CASE 
-                    WHEN fp.post_url ~ '/groups/([^/]+)/' 
-                    THEN (regexp_match(fp.post_url, '/groups/([^/]+)/'))[1]
+                    WHEN fp.post_url ~* '/groups/([^/]+)/' 
+                    THEN (regexp_match(fp.post_url, '/groups/([^/]+)/', 'i'))[1]
                     ELSE NULL 
                 END
             )
             ORDER BY post_count DESC
         """)
         groups = cursor.fetchall()
+        
+        # Log for debugging
+        logger.info(f"Found {len(groups)} groups in database")
+        if len(groups) > 0:
+            sample_groups = [g['group_id'] for g in groups[:5]]
+            logger.info(f"Sample group IDs: {sample_groups}")
 
         cursor.close()
         conn.close()
@@ -526,35 +532,16 @@ def get_groups():
             if not group_id:
                 continue
             
-            # Try to extract a readable group name from the ID
-            group_name = group_id
-            if group_id.startswith('http'):
-                # Extract from URL
-                try:
-                    parsed = urlparse(group_id)
-                    path_parts = [p for p in parsed.path.split('/') if p]
-                    if path_parts:
-                        # Get the last meaningful part of the path
-                        group_name = path_parts[-1] if path_parts[-1] else path_parts[-2] if len(path_parts) > 1 else group_id
-                        # Clean up the name (remove query params, etc.)
-                        group_name = group_name.split('?')[0]
-                except:
-                    group_name = group_id
-            elif '/' in group_id:
-                # If it's a path-like string, get the last part
-                group_name = group_id.split('/')[-1].split('?')[0]
-            
             # Format the name nicely
-            # If it's a readable name (not just numbers), format it
-            if not group_id.isdigit() and group_name and group_name != group_id:
-                # Replace dots, dashes, underscores with spaces and title case
-                group_dict['group_name'] = group_name.replace('.', ' ').replace('-', ' ').replace('_', ' ').title()
-            elif group_id.isdigit():
-                # For numeric IDs, just show as "Group {id}"
+            # Check if group_id is numeric (just digits)
+            if group_id.isdigit():
+                # For numeric IDs, show as "Group {id}"
                 group_dict['group_name'] = f"Group {group_id}"
             else:
-                # For readable names, format nicely
-                group_dict['group_name'] = group_name.replace('.', ' ').replace('-', ' ').replace('_', ' ').title()
+                # For readable names (like "pardodbiznesupardoduznemumu" or "grasis.lt")
+                # Replace dots, dashes, underscores with spaces and title case
+                formatted_name = group_id.replace('.', ' ').replace('-', ' ').replace('_', ' ').title()
+                group_dict['group_name'] = formatted_name
             
             groups_list.append(group_dict)
         
