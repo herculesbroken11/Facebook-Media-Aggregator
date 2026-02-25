@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { getImageSrc } from '../utils/imageUrl'
 
 const PostCard = ({ post, onClick }) => {
   const [imageError, setImageError] = useState(false)
@@ -52,11 +53,12 @@ const PostCard = ({ post, onClick }) => {
       ) : post.media_url && !imageError ? (
         <div className="relative h-48 bg-gray-200 dark:bg-gray-700 overflow-hidden">
           <img
-            src={post.media_url}
+            src={getImageSrc(post.media_url)}
             alt={post.content?.substring(0, 50) || 'Post image'}
             className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
             onError={() => setImageError(true)}
             loading="lazy"
+            referrerPolicy="no-referrer"
           />
         </div>
       ) : (

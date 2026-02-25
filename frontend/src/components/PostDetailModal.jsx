@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { getImageSrc } from '../utils/imageUrl'
 
 const PostDetailModal = ({ post, onClose }) => {
   const [imageError, setImageError] = useState(false)
@@ -62,10 +63,11 @@ const PostDetailModal = ({ post, onClose }) => {
               {post.image_urls.map((url, index) => (
                 <div key={index} className="mb-4 rounded-lg overflow-hidden">
                   <img
-                    src={url}
+                    src={getImageSrc(url)}
                     alt={`Post image ${index + 1}`}
                     className="w-full h-auto max-h-96 object-contain bg-gray-100 dark:bg-gray-700"
                     onError={() => setImageError(true)}
+                    referrerPolicy="no-referrer"
                   />
                 </div>
               ))}
@@ -73,10 +75,11 @@ const PostDetailModal = ({ post, onClose }) => {
           ) : post.media_url && !imageError ? (
             <div className="mb-6 rounded-lg overflow-hidden">
               <img
-                src={post.media_url}
+                src={getImageSrc(post.media_url)}
                 alt={post.content?.substring(0, 50) || 'Post image'}
                 className="w-full h-auto max-h-96 object-contain bg-gray-100 dark:bg-gray-700"
                 onError={() => setImageError(true)}
+                referrerPolicy="no-referrer"
               />
             </div>
           ) : null}

@@ -971,6 +971,80 @@ def update_profile():
         return jsonify({'error': 'Failed to update profile'}), 500
 
 
+# Allowed hostnames for image proxy (Facebook CDN)
+IMAGE_PROXY_ALLOWED_HOSTS = (
+    'facebook.com',
+    'www.facebook.com',
+    'fbcdn.net',
+    'fna.fbcdn.net',
+    'fbcdn.com',
+    'scontent.fstv5-1.fna.fbcdn.net',
+)
+
+
+def _is_allowed_image_url(url):
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = (parsed.netloc or '').lower()
+        if not host:
+            return False
+        for allowed in IMAGE_PROXY_ALLOWED_HOSTS:
+            if host == allowed or host.endswith('.' + allowed) or allowed.endswith(host):
+                return True
+        if 'fbcdn' in host or 'facebook' in host or 'scontent' in host:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+@app.route('/api/image-proxy', methods=['GET'])
+def image_proxy():
+    """Proxy image requests to avoid CORS/referrer blocking from Facebook CDN."""
+    import urllib.request
+    import urllib.error
+    from flask import Response
+
+    image_url = request.args.get('url')
+    if not image_url:
+        return jsonify({'error': 'Missing url parameter'}), 400
+    if not _is_allowed_image_url(image_url):
+        return jsonify({'error': 'URL not allowed'}), 403
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Referer': 'https://www.facebook.com/',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    req = urllib.request.Request(image_url, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read()
+            content_type = resp.headers.get('Content-Type', 'image/jpeg')
+        return Response(data, mimetype=content_type.split(';')[0].strip())
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            try:
+                body = e.read().decode('utf-8', errors='ignore')
+                if 'expired' in body.lower() or 'signature' in body.lower():
+                    logger.info("Image proxy: URL signature expired or invalid (Facebook CDN)")
+                else:
+                    logger.warning(f"Image proxy: CDN returned 403: {body[:200]}")
+            except Exception:
+                logger.warning("Image proxy: CDN returned 403 Forbidden")
+        else:
+            logger.warning(f"Image proxy: HTTP {e.code} from CDN")
+        return jsonify({'error': 'Image unavailable'}), 404
+    except Exception as e:
+        logger.warning(f"Image proxy error: {e}")
+        return jsonify({'error': 'Failed to load image'}), 502
+
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
