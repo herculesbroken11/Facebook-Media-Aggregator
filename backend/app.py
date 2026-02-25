@@ -171,7 +171,7 @@ def get_posts():
         params = []
 
         if author:
-            where_conditions.append("fp.user_name ILIKE %s")
+            where_conditions.append("fp.author_name ILIKE %s")
             params.append(f"%{author}%")
 
         if keyword:
@@ -219,8 +219,8 @@ def get_posts():
             SELECT 
                 fp.id,
                 fp.post_url,
-                fp.user_name as author_name,
-                fp.user_url as author_url,
+                fp.author_name as author_name,
+                fp.author_url as author_url,
                 fp.post_text as text_content,
                 COALESCE(
                     NULLIF(fp.group_id, ''),
@@ -255,8 +255,8 @@ def get_posts():
             FROM facebook_posts fp
             LEFT JOIN facebook_attachments fa ON fp.post_url = fa.post_url
             WHERE {where_clause}
-            GROUP BY fp.id, fp.post_url, fp.user_name, fp.user_url, fp.post_text, 
-                     fp.group_id, fp.reaction_count, fp.comment_count, fp.share_count, fp.created_at
+            GROUP BY fp.id, fp.post_url, fp.group_id, fp.reaction_count, fp.comment_count, fp.share_count, fp.created_at,
+                     (fp.author_name), (fp.author_url), (fp.post_text)
             ORDER BY {sort_field} {order.upper()}
             LIMIT %s OFFSET %s
         """
@@ -364,8 +364,8 @@ def get_post(post_id):
             SELECT 
                 fp.id,
                 fp.post_url,
-                fp.user_name as author_name,
-                fp.user_url as author_url,
+                fp.author_name as author_name,
+                fp.author_url as author_url,
                 fp.post_text as text_content,
                 fp.group_id,
                 fp.reaction_count as reactions,
@@ -393,7 +393,7 @@ def get_post(post_id):
             FROM facebook_posts fp
             LEFT JOIN facebook_attachments fa ON fp.post_url = fa.post_url
             WHERE fp.post_url = %s
-            GROUP BY fp.id, fp.post_url, fp.user_name, fp.user_url, fp.post_text, 
+GROUP BY fp.id, fp.post_url, fp.author_name, fp.author_url, fp.post_text,
                      fp.group_id, fp.reaction_count, fp.comment_count, fp.share_count, fp.created_at
         """
         cursor.execute(query, (post_id,))
@@ -610,7 +610,7 @@ def export_posts():
         params = []
 
         if author:
-            where_conditions.append("fp.user_name ILIKE %s")
+            where_conditions.append("fp.author_name ILIKE %s")
             params.append(f"%{author}%")
 
         if keyword:
@@ -649,8 +649,8 @@ def export_posts():
             SELECT 
                 fp.id,
                 fp.post_url,
-                fp.user_name as author_name,
-                fp.user_url as author_url,
+                fp.author_name as author_name,
+                fp.author_url as author_url,
                 fp.post_text as text_content,
                 fp.group_id,
                 fp.reaction_count as reactions,
@@ -678,7 +678,7 @@ def export_posts():
             FROM facebook_posts fp
             LEFT JOIN facebook_attachments fa ON fp.post_url = fa.post_url
             WHERE {where_clause}
-            GROUP BY fp.id, fp.post_url, fp.user_name, fp.user_url, fp.post_text, 
+GROUP BY fp.id, fp.post_url, fp.author_name, fp.author_url, fp.post_text,
                      fp.group_id, fp.reaction_count, fp.comment_count, fp.share_count, fp.created_at
             ORDER BY fp.created_at DESC
         """
@@ -840,7 +840,11 @@ def get_stats():
         engagement = cursor.fetchone()
 
         # Get unique authors count
-        cursor.execute("SELECT COUNT(DISTINCT user_name) as total_authors FROM facebook_posts WHERE user_name IS NOT NULL")
+        cursor.execute("""
+            SELECT COUNT(DISTINCT author_name) as total_authors 
+            FROM facebook_posts 
+            WHERE author_name IS NOT NULL
+        """)
         total_authors = cursor.fetchone()['total_authors']
 
         # Get posts by date (last 7 days) - convert BIGINT timestamp to date
